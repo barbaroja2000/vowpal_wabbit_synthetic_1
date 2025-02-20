@@ -208,6 +208,34 @@ def plot_reward_heatmap(user_types, times_of_day, actions):
 def main():
     st.title("Contextual Bandit Learning Visualization")
     
+    # Add explanation in an expander
+    with st.expander("ℹ️ How this simulation works", expanded=False):
+        st.markdown("""
+        ### About this Simulation
+        
+        This demo shows how a Contextual Bandit algorithm learns to personalize content layout for different types of users.
+        
+        #### Key Components:
+        - **Users**: Three types of users (Sports, Casino, Mixed)
+        - **Context**: User type and time of day (morning/afternoon)
+        - **Actions**: Different layout options (bingo, slots, sports, etc.)
+        - **Rewards**: The algorithm receives feedback (-1 for liked, 0 for disliked)
+        
+        #### Learning Process:
+        1. For each iteration, we simulate a user visit
+        2. The algorithm considers the context (user type & time)
+        3. It selects a layout based on past learning
+        4. We simulate user feedback based on predefined preferences
+        5. The algorithm updates its model based on the feedback
+        
+        #### Visualizations:
+        - **Learning Curve**: Shows how the algorithm improves over time
+        - **Action Distribution**: Shows how the algorithm learns to match layouts to users
+        - **Reward Heatmap**: Displays the underlying reward structure
+        
+        The algorithm is compared against random A/B testing to demonstrate its effectiveness.
+        """)
+    
     # Add slider for num_iterations
     num_iterations = st.slider("Number of Iterations", min_value=100, max_value=20000, value=5000, step=100)
     
