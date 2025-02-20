@@ -283,11 +283,13 @@ def main():
                         st.write("Action Distribution")
                         dist_fig = plot_action_distribution_by_user_type(vw, user_types, times_of_day, actions)
                         st.pyplot(dist_fig)
+                        plt.close(dist_fig)  # Close the figure to free memory
                     
                     with col2:
                         st.write("Reward Heatmap")
                         heat_fig = plot_reward_heatmap(user_types, times_of_day, actions)
                         st.pyplot(heat_fig)
+                        plt.close(heat_fig)  # Close the figure to free memory
         
         # Final update
         line.set_data(x_data, y_data)
