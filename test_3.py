@@ -237,7 +237,7 @@ def main():
         """)
     
     # Add slider for num_iterations
-    num_iterations = st.slider("Number of Iterations", min_value=100, max_value=20000, value=5000, step=100)
+    num_iterations = st.slider("Number of Iterations", min_value=100, max_value=3000, value=1000, step=100)
     
     # Add start button
     if st.button("Start Learning"):
