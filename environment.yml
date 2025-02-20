@@ -1,0 +1,11 @@
+name: vwyo
+dependencies:
+  - python=3.11
+  - conda-forge::vowpalwabbit
+  - pip
+  - pip:
+    - pandas
+    - scikit-learn
+    - numpy
+    - matplotlib
+    - streamlit
