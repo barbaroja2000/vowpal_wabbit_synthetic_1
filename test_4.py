@@ -264,7 +264,14 @@ def main():
             x_data.append(iteration)
             y_data.append(ctr)
             moving_avg.append(ctr)
-            bandit_total_reward += -ctr * iteration if iteration == 1 else -ctr * iteration + y_data[-2] * (iteration - 1)
+
+            # Changed: Correctly accumulate bandit_total_reward using raw cost
+            user_type = choose_user(user_types)
+            time_of_day = choose_time_of_day(times_of_day)
+            context = {'user_type': user_type, 'time_of_day': time_of_day}
+            action, _ = get_action(vw, context, actions)
+            cost = get_cost(context, action)
+            bandit_total_reward += -cost  # Reward = -costt_total_reward += -ctr * iteration if iteration == 1 else -ctr * iteration + y_data[-2] * (iteration - 1)
             
             # A/B baseline
             ab_context = {'user_type': choose_user(user_types), 'time_of_day': choose_time_of_day(times_of_day)}
