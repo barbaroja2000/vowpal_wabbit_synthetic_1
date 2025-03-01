@@ -91,6 +91,10 @@ class APYReport(FPDF):
     
     def add_image(self, img_path, w=None):
         if os.path.exists(img_path):
+            # Check if we're close to the bottom of the page - if so, add a new page
+            if self.get_y() > self.HEIGHT - 100:
+                self.add_page()
+            
             if w is None:
                 w = self.WIDTH - 40  # Default width
             
@@ -101,7 +105,14 @@ class APYReport(FPDF):
             # Center the image
             x = (self.WIDTH - w) / 2
             self.image(img_path, x=x, y=self.get_y(), w=w)
-            self.ln(h + 10)  # Space after image
+            
+            # Make sure to move cursor down after inserting the image
+            # with extra padding to prevent overlap
+            self.ln(h + 15)  # Increased space after image
+            
+            # Ensure we're not too close to the bottom of the page for new content
+            if self.get_y() > self.HEIGHT - 40:
+                self.add_page()
         else:
             self.set_text_color(255, 0, 0)
             self.cell(0, 10, f"Image not found: {img_path}", 0, 1, 'C')
@@ -349,6 +360,34 @@ def generate_report():
     )
     pdf.chapter_body(intro_text)
     
+    # Add SquareCB explanation
+    pdf.subsection_title('1.1 About SquareCB in Vowpal Wabbit')
+    squarecb_explanation = (
+        "SquareCB (Square Contextual Bandit) is an implementation within Vowpal Wabbit, a fast and efficient "
+        "open-source machine learning library originally developed at Microsoft Research. Vowpal Wabbit is "
+        "specifically optimized for online learning and provides several powerful contextual bandit algorithms.\n\n"
+        
+        "SquareCB offers several advantages for game recommendation systems:\n\n"
+        
+        "* Contextual awareness: Unlike traditional recommendation systems, SquareCB incorporates context "
+        "information (user type and time of day) to make more personalized recommendations.\n\n"
+        
+        "* Efficient exploration: The algorithm uses a square root exploration policy that balances trying new "
+        "options (exploration) with leveraging known high-performing options (exploitation).\n\n"
+        
+        "* Online learning: SquareCB learns continuously from each interaction, quickly adapting to changing "
+        "preferences without requiring expensive offline retraining.\n\n"
+        
+        "* Theoretical guarantees: The algorithm provides mathematical guarantees on regret bounds, ensuring "
+        "that performance improves over time and approaches optimal recommendations for each context.\n\n"
+        
+        "Vowpal Wabbit's implementation of SquareCB is particularly well-suited for production environments "
+        "due to its low computational overhead, ability to handle large feature spaces, and proven "
+        "effectiveness in real-world applications ranging from content recommendation to ad placement "
+        "and, as demonstrated in this experiment, casino game recommendations."
+    )
+    pdf.chapter_body(squarecb_explanation)
+    
     # Experiment Design
     pdf.add_page()
     pdf.chapter_title('2. Experiment Design')
@@ -408,9 +447,9 @@ def generate_report():
     # Hyperparameter Search
     pdf.section_title('2.3 Hyperparameter Search')
     hyperparam_text = (
-        "We conducted a grid search over the following hyperparameters for the SquareCB algorithm:\n\n"
+        "We conducted a grid search over the following hyperparameters for the SquareCB algorithm to find the optimal configuration for casino game recommendations:\n\n"
         
-        f"* Gamma (exploration): {', '.join(map(str, [5.0, 15.0, 30.0, 40.0, 50.0]))}\n"
+        f"* Gamma (exploration parameter): {', '.join(map(str, [5.0, 15.0, 30.0, 40.0, 50.0]))}\n"
         f"* Learning Rate: {', '.join(map(str, [0.1, 0.5, 1.0, 1.5, 2.0]))}\n"
         f"* Initial T: {', '.join(map(str, [0.5, 1.0, 3.0, 5.0, 8.0]))}\n"
         f"* Power T: {', '.join(map(str, [0.1, 0.3, 0.5, 0.7, 0.9]))}\n\n"
@@ -419,6 +458,38 @@ def generate_report():
         f"{5000:,} iterations for both SquareCB and A/B testing approaches."
     )
     pdf.chapter_body(hyperparam_text)
+    
+    # Add detailed explanations of hyperparameters
+    pdf.subsection_title('2.3.1 Hyperparameter Definitions in Context')
+    hyperparameter_details = (
+        "Understanding these hyperparameters is crucial for optimizing the contextual bandit algorithm's performance in a casino game recommendation scenario:\n\n"
+        
+        "* Gamma (Exploration Parameter): Controls how much the algorithm explores different game recommendations "
+        "versus exploiting known high-performing options. Higher values (e.g., 50.0) encourage more exploration, "
+        "which is beneficial for discovering optimal recommendations across diverse user contexts but may reduce "
+        "short-term performance. Lower values (e.g., 5.0) focus more on exploiting known good options, potentially "
+        "maximizing immediate rewards but risking missing better options for some contexts.\n\n"
+        
+        "* Learning Rate: Determines how quickly the algorithm incorporates new information about game performance. "
+        "Higher learning rates (e.g., 2.0) allow the system to adapt more quickly to player preferences but may cause "
+        "overreaction to random fluctuations. Lower rates (e.g., 0.1) provide more stable learning but may be slower "
+        "to adapt to genuine changes in player behavior or time-of-day effects.\n\n"
+        
+        "* Initial T: Sets the initial exploration temperature, influencing how random the recommendations are at the "
+        "start of the learning process. Higher values (e.g., 8.0) result in more uniform random exploration early on, "
+        "while lower values (e.g., 0.5) begin with more focused recommendations based on prior assumptions. In the casino "
+        "context, this affects how quickly the system starts tailoring recommendations to different user segments.\n\n"
+        
+        "* Power T: Controls the decay rate of exploration over time. Higher values (e.g., 0.9) maintain exploration "
+        "longer, which helps adapt to changing player preferences throughout the day. Lower values (e.g., 0.1) reduce "
+        "exploration more quickly, converging faster on perceived optimal strategies for each context. This is particularly "
+        "important for capturing time-of-day effects in player behavior.\n\n"
+        
+        "The interaction between these parameters determines how effectively the algorithm balances exploration versus "
+        "exploitation across different contexts. For example, high-roller users in the evening may require different "
+        "exploration strategies than casual players in the morning due to variations in reward structures and player behavior."
+    )
+    pdf.chapter_body(hyperparameter_details)
     
     # Evaluation Metrics
     pdf.section_title('2.4 Evaluation Metrics')
@@ -454,18 +525,55 @@ def generate_report():
     )
     pdf.chapter_body(overall_text)
     
+    # Add interpretation of optimal parameters
+    pdf.subsection_title('3.1.1 Interpretation of Optimal Parameters')
+    param_interpretation = (
+        "The optimal hyperparameter configuration reveals important insights about effective recommendation strategies "
+        "in the casino game context:\n\n"
+        
+        f"* Gamma ({best_config['gamma']:.2f}): This moderately high exploration parameter indicates that "
+        "balancing exploration with exploitation is crucial in this environment. The algorithm needs to "
+        "explore sufficiently to discover optimal actions for each context, while not over-exploring and "
+        "sacrificing too much immediate performance. This value allows the algorithm to explore enough to "
+        "learn context-specific preferences while still capitalizing on known high-performing options.\n\n"
+        
+        f"* Learning Rate ({best_config['learning_rate']:.2f}): This learning rate represents a balance between "
+        "quickly adapting to new information and maintaining stability. In the casino context, player preferences "
+        "vary substantially across segments and time periods, requiring sufficient adaptability, but random "
+        "fluctuations in rewards also necessitate some level of stability in the learning process.\n\n"
+        
+        f"* Initial T ({best_config['initial_t']:.2f}): The optimal initial temperature suggests that a moderate "
+        "level of initial randomness is beneficial. This allows the algorithm to quickly explore the action space "
+        "early on without being completely random, providing a good starting point for learning context-specific "
+        "patterns in player preferences.\n\n"
+        
+        f"* Power T ({best_config['power_t']:.2f}): This decay rate controls how quickly exploration diminishes. "
+        "The optimal value indicates that maintaining some level of exploration throughout the learning process "
+        "is important in this domain, likely due to the variations in player behavior across different times of day "
+        "and the need to continually adapt to these patterns.\n\n"
+        
+        "These parameter values work together to create an algorithm that effectively balances immediate reward "
+        "maximization with long-term learning across diverse user contexts, resulting in significantly higher "
+        "Average Player Yield compared to non-contextual approaches."
+    )
+    pdf.chapter_body(param_interpretation)
+    
     # Add parameter effects visualization
     if os.path.exists('param_effects_apy.png'):
+        # Ensure we start on a new page for this visualization
+        if pdf.get_y() > pdf.HEIGHT - 180:  # Need enough space for image and caption
+            pdf.add_page()
         pdf.add_image('param_effects_apy.png', 160)
         
-    performance_notes = (
-        "The visualization above shows how learning rate and gamma (exploration parameter) affect APY. "
-        "The optimal configuration (marked with a star) balances exploration and exploitation to achieve "
-        "the highest rewards."
-    )
-    pdf.chapter_body(performance_notes)
+        performance_notes = (
+            "The visualization above shows how learning rate and gamma (exploration parameter) affect APY. "
+            "The optimal configuration (marked with a star) balances exploration and exploitation to achieve "
+            "the highest rewards."
+        )
+        pdf.chapter_body(performance_notes)
     
     # Context Coverage and Time Sensitivity
+    pdf.add_page()  # Always start this section on a new page
     pdf.section_title('3.2 Context Coverage and Time Sensitivity')
     context_text = (
         f"The SquareCB algorithm achieved a context coverage of {best_config['context_coverage']*100:.1f}%, "
@@ -484,6 +592,9 @@ def generate_report():
         
     # Add regret analysis visualization
     if os.path.exists('regret_analysis.png'):
+        # Ensure we have a page break if needed
+        if pdf.get_y() > pdf.HEIGHT - 180:
+            pdf.add_page()
         pdf.add_image('regret_analysis.png', 160)
     
     # Context-Specific Performance
@@ -556,6 +667,8 @@ def generate_report():
     
     # Add context performance comparison chart
     if os.path.exists('context_performance_comparison.png'):
+        # Start on a new page for this large visualization
+        pdf.add_page()
         pdf.add_image('context_performance_comparison.png', 180)
         
         ab_insight_text = (
