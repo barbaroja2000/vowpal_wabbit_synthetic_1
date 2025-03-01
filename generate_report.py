@@ -349,14 +349,14 @@ def generate_report():
         "The ability to personalize recommendations based on these contexts is crucial for maximizing "
         "player engagement and revenue.\n\n"
         
-        "This experiment compares two approaches to game recommendation personalization:\n\n"
+        "This simulation study compares two approaches to game recommendation personalization:\n\n"
         "1. Traditional A/B Testing: Randomly selecting game recommendations without considering context\n"
         "2. SquareCB Contextual Bandit: An advanced algorithm that learns optimal recommendations for each "
         "user type and time of day combination\n\n"
         
         "Our primary metric is Average Player Yield (APY), which measures the average reward (player engagement) "
-        "achieved with each approach. We also analyze context-specific performance, time sensitivity, and "
-        "regret metrics."
+        "achieved with each approach in our simulated environment. We also analyze context-specific performance, "
+        "time sensitivity, and regret metrics to understand how these approaches might perform in controlled conditions."
     )
     pdf.chapter_body(intro_text)
     
@@ -395,19 +395,19 @@ def generate_report():
     # Methodology
     pdf.section_title('2.1 Methodology')
     methodology_text = (
-        "We simulated a casino game recommendation system with the following components:\n\n"
+        "For this study, we created a controlled simulation of a casino game recommendation system with the following components:\n\n"
         
         "* User Types: high_roller, casual_player, sports_enthusiast, newbie\n"
         "* Times of Day: morning, afternoon, evening\n"
         "* Game Types (Actions): slots_heavy, live_casino, sports_betting, mixed_games, promotional\n\n"
         
-        "Each user type has different baseline preferences for game types, and these preferences vary "
+        "In our simulation model, each user type has different baseline preferences for game types, and these preferences vary "
         "by time of day. For example, high rollers prefer live casino games, especially in the evening, "
         "while sports enthusiasts strongly prefer sports betting, particularly in the afternoon and evening.\n\n"
         
-        "We conducted a hyperparameter search for the SquareCB algorithm to find optimal settings. For each "
-        "parameter combination, we ran simulations with both SquareCB and A/B testing approaches using "
-        f"identical contexts over {5000:,} iterations."
+        "We conducted a hyperparameter search for the SquareCB algorithm to find optimal settings within this simulated environment. "
+        "For each parameter combination, we ran controlled simulations with both SquareCB and A/B testing approaches using "
+        f"identical contexts over {5000:,} iterations to ensure fair comparison under identical conditions."
     )
     pdf.chapter_body(methodology_text)
     
@@ -741,68 +741,50 @@ def generate_report():
     pdf.add_page()
     pdf.chapter_title('4. Conclusion')
     conclusion_text = (
-        "This experiment demonstrates the significant advantages of context-aware recommendation "
-        "systems using SquareCB over traditional A/B testing approaches in a casino game recommendation "
-        "scenario. Key findings include:\n\n"
+        "This simulation experiment demonstrates the potential advantages of context-aware recommendation "
+        "systems using SquareCB over traditional A/B testing approaches in a simulated casino game recommendation "
+        "scenario. Key findings from our simulation include:\n\n"
         
-        f"1. Overall Performance: SquareCB achieved a {best_config['improvement_over_ab']:.2f}% improvement "
-        "in Average Player Yield (APY) compared to A/B testing, demonstrating the substantial value "
-        "of contextual awareness.\n\n"
+        f"1. Simulated Performance: In our controlled environment, SquareCB achieved a {best_config['improvement_over_ab']:.2f}% improvement "
+        "in Average Player Yield (APY) compared to A/B testing, suggesting the potential value "
+        "of contextual awareness in recommendation systems.\n\n"
         
         f"2. Context Coverage: The algorithm successfully learned optimal strategies for {best_config['context_coverage']*100:.1f}% "
-        "of contexts, showing its ability to adapt to different user types and times of day.\n\n"
+        "of simulated contexts, demonstrating its ability to adapt to different user types and times of day "
+        "within the parameters of our simulation.\n\n"
         
-        "3. Personalization: SquareCB effectively personalized recommendations based on both user type "
-        "and time of day, achieving high accuracy in selecting optimal actions across contexts.\n\n"
+        "3. Personalization Capabilities: SquareCB effectively personalized recommendations based on both user type "
+        "and time of day in our simulation, achieving high accuracy in selecting optimal actions across "
+        "the predefined contexts.\n\n"
         
-        "4. Consistent Improvement: The contextual approach outperformed A/B testing across all "
-        "contexts, with particularly significant improvements for contexts with strong preferences.\n\n"
+        "4. Consistent Improvement: Within our simulated environment, the contextual approach outperformed A/B testing "
+        "across all contexts, with particularly significant improvements for contexts with strong preference patterns.\n\n"
         
-        "These results highlight the importance of considering context in recommendation systems. "
-        "By accounting for user type and time of day, SquareCB can deliver more personalized and "
-        "engaging recommendations, leading to higher rewards and better user experiences.\n\n"
+        "These simulation results suggest the potential importance of considering context in recommendation systems. "
+        "By accounting for user type and time of day in our controlled experiment, SquareCB demonstrated the ability "
+        "to deliver more personalized recommendations, leading to higher simulated rewards.\n\n"
         
-        "The optimal hyperparameter configuration balances exploration and exploitation, allowing "
-        "the algorithm to quickly learn context patterns while continuing to explore alternatives. "
-        "This approach is particularly valuable in dynamic environments where user preferences may "
-        "change over time."
+        "The optimal hyperparameter configuration identified in our simulation balances exploration and exploitation, "
+        "allowing the algorithm to quickly learn context patterns while continuing to explore alternatives. "
+        "While these findings are promising, it's important to note that real-world implementations would face "
+        "additional challenges not captured in this simulation."
     )
     pdf.chapter_body(conclusion_text)
     
-    # Business Implications
-    pdf.section_title('4.1 Business Implications')
-    business_text = (
-        "The findings of this experiment have several important implications for online casino platforms:\n\n"
-        
-        "* Revenue Potential: The significant improvement in player engagement (APY) suggests substantial "
-        "revenue uplift potential from implementing contextual recommendations.\n\n"
-        
-        "* Personalization Strategy: The results validate the importance of considering both user segments "
-        "and time of day in personalization strategies.\n\n"
-        
-        "* Resource Allocation: Different contexts show varying levels of improvement, suggesting where "
-        "personalization efforts should be focused for maximum impact.\n\n"
-        
-        "* Technical Implementation: The optimal hyperparameter configuration provides a starting point "
-        "for implementing SquareCB in production systems."
-    )
-    pdf.chapter_body(business_text)
     
     # Future Work
-    pdf.section_title('4.2 Future Work')
+    pdf.section_title('4.1 Future Work')
     future_text = (
         "Several directions for future work could further enhance the value of contextual recommendations:\n\n"
         
         "* Additional Contexts: Incorporate additional contextual factors such as device type, player history, "
         "or geographic location.\n\n"
         
+        "* Add more complex simulated context to reward structure with additional noise to test the robustness of the model.\n\n"
+        
         "* Dynamic Adaptation: Explore approaches that can adapt to changing user preferences over time.\n\n"
         
-        "* Multi-Armed Contextual Bandits: Extend to scenarios with more complex action spaces, such as "
-        "recommending specific games rather than game categories.\n\n"
-        
-        "* Real-World Validation: Conduct A/B tests in real-world environments to validate the simulation "
-        "findings with actual player behavior."
+        "* Model simulated context based on real-world analysis to better approximate actual player behavior."
     )
     pdf.chapter_body(future_text)
     
