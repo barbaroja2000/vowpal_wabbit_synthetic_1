@@ -10,3 +10,7 @@ dependencies:
     - matplotlib
     - streamlit
     - plotly
+    - watchdog
+    - fpdf 
+    - matplotlib 
+    - seaborn

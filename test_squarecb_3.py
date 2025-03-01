@@ -283,12 +283,12 @@ def main():
         """)
     
     # Add sliders and inputs for tuning with improved defaults for better convergence
-    num_iterations = st.slider("Number of Iterations", min_value=100, max_value=10000, value=5000, step=100)
-    gamma = st.slider("Gamma (Exploration)", min_value=0.1, max_value=50.0, value=10.0, step=0.1)
-    learning_rate = st.slider("Learning Rate", min_value=0.01, max_value=2.0, value=0.5, step=0.01)
-    initial_t = st.slider("Initial T (Learning Rate Decay)", min_value=0.1, max_value=10.0, value=3.0, step=0.1)
-    power_t = st.slider("Power T (Decay Exponent)", min_value=0.0, max_value=1.0, value=0.5, step=0.1)
-    noise_sigma = st.slider("Reward Noise (Sigma % of Mean)", min_value=0.05, max_value=0.3, value=0.15, step=0.01)
+    num_iterations = st.slider("Number of Iterations", min_value=100, max_value=10000, value=10000, step=100)
+    gamma = st.slider("Gamma (Exploration)", min_value=0.1, max_value=50.0, value=50.0, step=0.1)
+    learning_rate = st.slider("Learning Rate", min_value=0.01, max_value=2.0, value=1.5, step=0.01)
+    initial_t = st.slider("Initial T (Learning Rate Decay)", min_value=0.1, max_value=10.0, value=0.5, step=0.1)
+    power_t = st.slider("Power T (Decay Exponent)", min_value=0.0, max_value=1.0, value=0.3, step=0.1)
+    noise_sigma = st.slider("Reward Noise (Sigma % of Mean)", min_value=0.05, max_value=0.3, value=0.05, step=0.01)
     use_seed = st.checkbox("Set Random Seed", value=True)
     seed = st.number_input("Random Seed (if checked)", min_value=0, value=42) if use_seed else None
     
