@@ -10,6 +10,10 @@ import time
 import gc
 import json
 from collections import deque
+import multiprocessing as mp
+from functools import partial
+import csv
+import threading
 
 # Define user types, times of day, and actions (same as original)
 user_types = ["high_roller", "casual_player", "sports_enthusiast", "newbie"]
@@ -56,18 +60,18 @@ user_type_time_multiplier = {
 }
 
 param_grid = {
-    'gamma': [5.0, 15.0, 30.0],          # Reduced from 4 to 3 values
-    'learning_rate': [0.1, 0.5, 1.0],    # Removed 1.5 as it's likely too high
-    'initial_t': [1.0, 3.0],             # Reduced to 2 key values
-    'power_t': [0.4, 0.6],               # Focused on middle range values
-    'noise_sigma': [0.05, 0.15]          # Removed middle value for efficiency
+    'gamma': [5.0, 15.0, 30.0, 40.0, 50.0],          # Expanded to include higher values up to 50.0
+    'learning_rate': [0.1, 0.5, 1.0, 1.5, 2.0],      # Added higher values up to 2.0
+    'initial_t': [0.5, 1.0, 3.0, 5.0, 8.0],          # Expanded range from 0.5 to 8.0
+    'power_t': [0.1, 0.3, 0.5, 0.7, 0.9],            # Expanded to include 0.3 and more values
+    'noise_sigma': [0.05]      # More granular search with additional values
 }
 
 # Output file
-RESULTS_FILE = 'hyperparameter_search_results.csv'
-CHECKPOINT_FILE = 'hyperparameter_search_checkpoint.json'
-MAX_ITERATIONS = 6000
-EVAL_INTERVAL = 200  # Evaluate performance every N iterations
+RESULTS_FILE = 'context_aware_hyperparameter_search_results.csv'
+CHECKPOINT_FILE = 'context_aware_hyperparameter_search_checkpoint.json'
+MAX_ITERATIONS = 5000  # Reduced for faster processing with parallelization
+EVAL_INTERVAL = 250  # Increased interval for better performance
 
 # Core functions from original code
 def get_cost(context, action, noise_sigma=0.1):
@@ -118,14 +122,18 @@ def choose_time_of_day(times_of_day):
     return random.choice(times_of_day)
 
 # Evaluation metrics
-def calculate_time_sensitivity(vw, user_types, times_of_day, actions, num_samples=100):
+def calculate_time_sensitivity(vw, user_types, times_of_day, actions, num_samples=50):
     """
     Measure how differently the model behaves across time periods for the same user_type.
     Higher score means greater time sensitivity.
+    Optimized with fewer samples for better performance in parallel processing.
     """
     time_sensitivity_score = 0
     
-    for user_type in user_types:
+    # Only use a subset of user types to speed up calculation
+    sampled_user_types = random.sample(user_types, min(2, len(user_types)))
+    
+    for user_type in sampled_user_types:
         time_distributions = {}
         
         for time in times_of_day:
@@ -148,12 +156,16 @@ def calculate_time_sensitivity(vw, user_types, times_of_day, actions, num_sample
             # Simple distance measure between distributions
             distance = sum(abs(p1 - p2) for p1, p2 in zip(dist1, dist2)) / 2.0
             time_sensitivity_score += distance
-            
-    # Normalize by number of comparisons
-    return time_sensitivity_score / (len(user_types) * len(list(itertools.combinations(times_of_day, 2))))
+    
+    # Adjust normalization for the subset of user types
+    return time_sensitivity_score / (len(sampled_user_types) * len(list(itertools.combinations(times_of_day, 2))))
 
-def run_experiment(params, seed=42):
-    """Run a single experiment with given hyperparameters"""
+def run_experiment(params, seed=None):
+    """Run a single experiment with given hyperparameters with memory optimization"""
+    # Set a unique seed if none provided
+    if seed is None:
+        seed = int(time.time() * 1000) % 100000 + os.getpid()
+    
     # Set seeds
     np.random.seed(seed)
     random.seed(seed)
@@ -169,16 +181,11 @@ def run_experiment(params, seed=42):
     vw_args = f"--cb_explore_adf -q UA -q TA --quiet --squarecb --gamma {gamma} -l {learning_rate} --initial_t {initial_t} --power_t {power_t} --cb_type mtr --normalize"
     vw = pyvw.Workspace(vw_args)
     
-    # Track metrics
+    # Track metrics (only keep final values to save memory)
     cost_sum = 0.0
-    cost_history = []
+    last_ctr = 0.0
     
-    # Metrics storage for efficiency
-    metrics = {
-        'ctr': [],
-        'iteration': []
-    }
-    
+    # Run iterations
     for i in range(1, MAX_ITERATIONS + 1):
         # Sample context
         user_type = choose_user(user_types)
@@ -196,26 +203,31 @@ def run_experiment(params, seed=42):
         vw_format = vw.parse(to_vw_example_format(context, actions, (action, cost, prob)), pyvw.Workspace.lContextualBandit)
         vw.learn(vw_format)
         
-        # Record metrics at evaluation intervals
-        if i % EVAL_INTERVAL == 0 or i == MAX_ITERATIONS:
-            ctr = -1 * cost_sum / i  # CTR is negative of average cost
-            metrics['ctr'].append(ctr)
-            metrics['iteration'].append(i)
+        # Calculate final CTR
+        if i == MAX_ITERATIONS:
+            last_ctr = -1 * cost_sum / i
     
     # Calculate time sensitivity at end of experiment
     time_sensitivity = calculate_time_sensitivity(vw, user_types, times_of_day, actions)
     
+    # Calculate context-specific performance
+    context_performance = calculate_context_specific_performance(vw, user_types, times_of_day, actions)
+    
     # Clean up
     vw.finish()
     del vw
-    gc.collect()  # Force garbage collection for memory efficiency
+    gc.collect()  # Force garbage collection
     
+    # Return minimal result structure to save memory
     return {
-        'params': params,
-        'final_ctr': metrics['ctr'][-1],
+        'final_ctr': last_ctr,
         'time_sensitivity': time_sensitivity,
-        'ctr_history': metrics['ctr'],
-        'iterations': metrics['iteration']
+        'context_coverage': context_performance['context_coverage'],
+        'average_regret': context_performance['average_regret'],
+        'max_regret': context_performance['max_regret'],
+        'worst_context': context_performance['worst_context'][0],  # Just store the key to save memory
+        'ctr_history': [],  # Empty to save memory
+        'iterations': []    # Empty to save memory
     }
 
 def get_completed_runs():
@@ -247,55 +259,29 @@ def load_checkpoint():
             return json.load(f)
     return {'current_idx': 0, 'total': 0}
 
-def run_grid_search():
-    """Run hyperparameter grid search with checkpointing"""
-    # Generate all parameter combinations
-    param_keys = list(param_grid.keys())
-    param_values = list(param_grid.values())
-    param_combinations = list(itertools.product(*param_values))
-    
-    print(f"Total parameter combinations: {len(param_combinations)}")
-    
-    # Get already completed runs
-    completed_runs = get_completed_runs()
-    print(f"Found {len(completed_runs)} already completed runs")
-    
-    # Load checkpoint
-    checkpoint = load_checkpoint()
-    start_idx = checkpoint['current_idx']
-    
-    # Create or open results file
-    if not os.path.exists(RESULTS_FILE):
-        # Create empty dataframe with columns
-        df = pd.DataFrame(columns=[
-            'gamma', 'learning_rate', 'initial_t', 'power_t', 'noise_sigma',
-            'final_ctr', 'time_sensitivity', 'timestamp'
-        ])
-        df.to_csv(RESULTS_FILE, index=False)
-    
-    # Loop through all combinations
-    for idx, values in enumerate(param_combinations[start_idx:], start=start_idx):
-        params = {key: values[i] for i, key in enumerate(param_keys)}
+def process_param_combination(param_tuple, param_keys, completed_runs, result_lock):
+    """Process a single parameter combination in a separate process"""
+    try:
+        # Convert tuple to dict of parameters
+        params = {key: param_tuple[i] for i, key in enumerate(param_keys)}
         
-        # Check if this combination has already been run
-        param_tuple = tuple(values)
+        # Skip if already done
         if param_tuple in completed_runs:
-            print(f"Skipping combination {idx+1}/{len(param_combinations)} - already completed")
-            continue
+            return None
         
-        print(f"\nRunning combination {idx+1}/{len(param_combinations)}:")
-        print(params)
+        # Print status with minimal output to avoid buffer issues
+        print(f"Running: gamma={params['gamma']}, lr={params['learning_rate']}")
         
         # Time the experiment
         start_time = time.time()
         
-        # Run experiment
+        # Run experiment with memory optimization
         result = run_experiment(params)
         
         # Measure elapsed time
         elapsed = time.time() - start_time
         
-        # Extract and save results
+        # Extract only the necessary results to save memory
         row = {
             'gamma': params['gamma'],
             'learning_rate': params['learning_rate'],
@@ -304,22 +290,141 @@ def run_grid_search():
             'noise_sigma': params['noise_sigma'],
             'final_ctr': result['final_ctr'],
             'time_sensitivity': result['time_sensitivity'],
+            'context_coverage': result['context_coverage'],
+            'average_regret': result['average_regret'],
+            'max_regret': result['max_regret'],
+            'worst_context': result['worst_context'],
             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         
-        # Append to CSV
-        df = pd.DataFrame([row])
-        df.to_csv(RESULTS_FILE, mode='a', header=False, index=False)
+        # Write to CSV with lock to prevent race conditions
+        with result_lock:
+            with open(RESULTS_FILE, 'a', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=row.keys())
+                writer.writerow(row)
         
-        # Update checkpoint
-        save_checkpoint(idx + 1, param_combinations)
+        print(f"Completed: gamma={params['gamma']}, lr={params['learning_rate']} in {elapsed:.2f}s")
         
-        print(f"Completed in {elapsed:.2f} seconds")
-        print(f"Final CTR: {result['final_ctr']:.3f}, Time Sensitivity: {result['time_sensitivity']:.3f}")
+        # Force cleanup
+        result.clear()
+        del result
+        gc.collect()
+        
+        return row
     
-    # Remove checkpoint file when done
-    if os.path.exists(CHECKPOINT_FILE):
-        os.remove(CHECKPOINT_FILE)
+    except Exception as e:
+        print(f"Error processing parameters: {param_tuple}")
+        print(f"Exception: {str(e)}")
+        return None
+
+def run_grid_search(num_processes=None):
+    """Run hyperparameter grid search with multiprocessing and memory optimization"""
+    # Generate all parameter combinations
+    param_keys = list(param_grid.keys())
+    param_values = list(param_grid.values())
+    param_combinations = list(itertools.product(*param_values))
+    
+    total_combinations = len(param_combinations)
+    print(f"Total parameter combinations: {total_combinations}")
+    
+    # Get already completed runs
+    completed_runs = get_completed_runs()
+    print(f"Found {len(completed_runs)} already completed runs")
+    completed_count = len(completed_runs)
+    
+    # Define result columns to ensure consistency
+    result_columns = [
+        'gamma', 'learning_rate', 'initial_t', 'power_t', 'noise_sigma',
+        'final_ctr', 'time_sensitivity', 'context_coverage', 'average_regret', 
+        'max_regret', 'worst_context', 'timestamp'
+    ]
+    
+    # Filter out already completed runs
+    param_combinations_to_run = [pc for pc in param_combinations if pc not in completed_runs]
+    print(f"Combinations remaining to run: {len(param_combinations_to_run)}")
+    
+    # Create results file if it doesn't exist
+    if not os.path.exists(RESULTS_FILE):
+        # Create empty dataframe with columns
+        df = pd.DataFrame(columns=result_columns)
+        df.to_csv(RESULTS_FILE, index=False)
+    else:
+        # Check if existing file has all necessary columns
+        existing_df = pd.read_csv(RESULTS_FILE)
+        missing_columns = [col for col in result_columns if col not in existing_df.columns]
+        
+        if missing_columns:
+            print(f"Warning: Results file missing columns: {missing_columns}")
+            print("Creating a new results file with the correct format.")
+            
+            # Create a new file with correct columns, preserving existing results if possible
+            new_df = pd.DataFrame(columns=result_columns)
+            
+            # Copy data from existing columns
+            common_columns = [col for col in result_columns if col in existing_df.columns]
+            if common_columns:
+                for col in common_columns:
+                    if col in existing_df.columns:
+                        new_df[col] = existing_df[col]
+            
+            # Save the new format
+            new_df.to_csv(RESULTS_FILE, index=False)
+    
+    # If no combinations to run, we're done
+    if not param_combinations_to_run:
+        print("All parameter combinations already completed.")
+        return
+    
+    # Determine the number of processes to use (default to 3)
+    if num_processes is None:
+        num_processes = 3
+    print(f"Running with {num_processes} parallel processes")
+    
+    # Create a progress tracking mechanism
+    progress_lock = threading.Lock()
+    progress_count = mp.Value('i', 0)
+    
+    def track_progress(result):
+        if result is not None:  # Skip None results (already completed runs)
+            with progress_lock:
+                progress_count.value += 1
+                processed = completed_count + progress_count.value
+                percent = processed / total_combinations * 100
+                print(f"\rProgress: {processed}/{total_combinations} ({percent:.1f}%)", end="", flush=True)
+    
+    # Process in smaller batches to manage memory better
+    BATCH_SIZE = num_processes * 3  # Process 3 batches per process at a time
+    
+    # Use a Manager object to create a shareable lock
+    with mp.Manager() as manager:
+        result_lock = manager.Lock()
+        
+        # Process combinations in batches to control memory usage
+        for batch_start in range(0, len(param_combinations_to_run), BATCH_SIZE):
+            batch_end = min(batch_start + BATCH_SIZE, len(param_combinations_to_run))
+            batch = param_combinations_to_run[batch_start:batch_end]
+            
+            print(f"\nProcessing batch {batch_start//BATCH_SIZE + 1}/{(len(param_combinations_to_run)+BATCH_SIZE-1)//BATCH_SIZE}")
+            
+            # Create a partial function with fixed parameters
+            process_func = partial(process_param_combination, 
+                                param_keys=param_keys, 
+                                completed_runs=completed_runs,
+                                result_lock=result_lock)
+            
+            # Run batch in parallel
+            with mp.Pool(processes=num_processes) as pool:
+                async_results = []
+                for param_combination in batch:
+                    async_result = pool.apply_async(process_func, (param_combination,), callback=track_progress)
+                    async_results.append(async_result)
+                
+                # Wait for all processes in this batch to complete
+                for async_result in async_results:
+                    async_result.wait()
+            
+            # Force garbage collection between batches
+            gc.collect()
     
     print("\nGrid search completed!")
 
@@ -333,6 +438,14 @@ def analyze_results():
     
     print(f"Analyzed {len(df)} experiment runs")
     
+    # Check which columns exist in the dataframe
+    context_aware_columns = ['context_coverage', 'average_regret', 'max_regret', 'worst_context']
+    has_context_metrics = all(col in df.columns for col in context_aware_columns)
+    
+    if not has_context_metrics:
+        print("\nWARNING: Results file does not contain context-specific metrics.")
+        print("Only showing basic CTR and time sensitivity metrics.")
+    
     # Top 10 by CTR
     print("\nTop 10 parameter combinations by CTR:")
     top_ctr = df.sort_values('final_ctr', ascending=False).head(10)
@@ -343,25 +456,112 @@ def analyze_results():
     top_time = df.sort_values('time_sensitivity', ascending=False).head(10)
     print(top_time[['gamma', 'learning_rate', 'initial_t', 'power_t', 'noise_sigma', 'time_sensitivity']])
     
+    # Context-specific metrics if available
+    if has_context_metrics:
+        # Top 10 by context coverage
+        print("\nTop 10 parameter combinations by context coverage:")
+        top_coverage = df.sort_values('context_coverage', ascending=False).head(10)
+        print(top_coverage[['gamma', 'learning_rate', 'initial_t', 'power_t', 'noise_sigma', 'context_coverage']])
+        
+        # Best combinations with low regret
+        print("\nTop 10 parameter combinations by lowest average regret:")
+        top_regret = df.sort_values('average_regret', ascending=True).head(10)
+        print(top_regret[['gamma', 'learning_rate', 'initial_t', 'power_t', 'noise_sigma', 'average_regret', 'max_regret']])
+    
     # Calculate correlation between parameters and metrics
     print("\nCorrelation between parameters and metrics:")
-    correlation = df[['gamma', 'learning_rate', 'initial_t', 'power_t', 'noise_sigma', 
-                     'final_ctr', 'time_sensitivity']].corr()
-    print(correlation[['final_ctr', 'time_sensitivity']])
+    correlation_cols = ['gamma', 'learning_rate', 'initial_t', 'power_t', 'noise_sigma', 
+                         'final_ctr', 'time_sensitivity']
+    if has_context_metrics:
+        correlation_cols.extend(['context_coverage', 'average_regret', 'max_regret'])
     
-    # Create a composite score (CTR + time sensitivity)
-    # Normalize both scores first
+    correlation = df[correlation_cols].corr()
+    
+    if has_context_metrics:
+        print(correlation[['final_ctr', 'time_sensitivity', 'context_coverage', 'average_regret']])
+    else:
+        print(correlation[['final_ctr', 'time_sensitivity']])
+    
+    # Create a context-aware composite score
+    # Normalize all scores first
     df['norm_ctr'] = (df['final_ctr'] - df['final_ctr'].min()) / (df['final_ctr'].max() - df['final_ctr'].min())
     df['norm_time'] = (df['time_sensitivity'] - df['time_sensitivity'].min()) / (df['time_sensitivity'].max() - df['time_sensitivity'].min())
-    df['composite_score'] = 0.7 * df['norm_ctr'] + 0.3 * df['norm_time']  # Weight CTR higher
     
-    print("\nTop 10 parameter combinations by composite score (70% CTR, 30% time sensitivity):")
-    top_composite = df.sort_values('composite_score', ascending=False).head(10)
-    print(top_composite[['gamma', 'learning_rate', 'initial_t', 'power_t', 'noise_sigma', 
-                         'final_ctr', 'time_sensitivity', 'composite_score']])
+    # Original composite score
+    df['original_composite_score'] = 0.7 * df['norm_ctr'] + 0.3 * df['norm_time']
     
-    # Visualize parameter effects
-    # Example: learning rate vs gamma colored by CTR
+    # Context-aware score if metrics are available
+    if has_context_metrics:
+        df['norm_coverage'] = (df['context_coverage'] - df['context_coverage'].min()) / (df['context_coverage'].max() - df['context_coverage'].min())
+        
+        # Invert regret scores since lower is better
+        if df['average_regret'].max() != df['average_regret'].min():
+            df['norm_avg_regret'] = 1 - (df['average_regret'] - df['average_regret'].min()) / (df['average_regret'].max() - df['average_regret'].min())
+        else:
+            df['norm_avg_regret'] = 1.0
+        
+        if df['max_regret'].max() != df['max_regret'].min():
+            df['norm_max_regret'] = 1 - (df['max_regret'] - df['max_regret'].min()) / (df['max_regret'].max() - df['max_regret'].min())
+        else:
+            df['norm_max_regret'] = 1.0
+        
+        # Balanced composite score with more weight on context-specific metrics
+        df['context_aware_score'] = (
+            0.3 * df['norm_ctr'] + 
+            0.1 * df['norm_time'] + 
+            0.2 * df['norm_coverage'] + 
+            0.25 * df['norm_avg_regret'] + 
+            0.15 * df['norm_max_regret']
+        )
+        
+        print("\nTop 10 parameter combinations by context-aware composite score:")
+        print("(30% CTR, 10% time sensitivity, 20% context coverage, 40% regret metrics)")
+        top_context_aware = df.sort_values('context_aware_score', ascending=False).head(10)
+        print(top_context_aware[['gamma', 'learning_rate', 'initial_t', 'power_t', 'noise_sigma', 
+                             'final_ctr', 'time_sensitivity', 'context_coverage', 'average_regret', 'context_aware_score']])
+    
+    # Original composite score for comparison
+    print("\nTop 10 parameter combinations by original composite score (70% CTR, 30% time sensitivity):")
+    top_original = df.sort_values('original_composite_score', ascending=False).head(10)
+    print(top_original[['gamma', 'learning_rate', 'initial_t', 'power_t', 'noise_sigma', 
+                      'final_ctr', 'time_sensitivity', 'original_composite_score']])
+    
+    # Visualizations
+    if has_context_metrics:
+        # Visualize parameter effects with context-aware composite score
+        plt.figure(figsize=(10, 8))
+        scatter = plt.scatter(df['learning_rate'], df['gamma'], 
+                             c=df['context_aware_score'], cmap='viridis', 
+                             s=50, alpha=0.7)
+        plt.colorbar(scatter, label='Context-Aware Score')
+        plt.xlabel('Learning Rate')
+        plt.ylabel('Gamma (Exploration)')
+        plt.title('Effect of Learning Rate and Gamma on Context-Aware Performance')
+        plt.savefig('context_aware_param_effects.png')
+        
+        # Gamma vs power_t colored by context coverage
+        plt.figure(figsize=(10, 8))
+        scatter = plt.scatter(df['gamma'], df['power_t'], 
+                             c=df['context_coverage'], cmap='plasma', 
+                             s=50, alpha=0.7)
+        plt.colorbar(scatter, label='Context Coverage')
+        plt.xlabel('Gamma (Exploration)')
+        plt.ylabel('Power T (Decay Exponent)')
+        plt.title('Effect of Gamma and Power T on Context Coverage')
+        plt.savefig('context_aware_param_effects_coverage.png')
+        
+        # Learning rate vs initial_t colored by average regret
+        plt.figure(figsize=(10, 8))
+        scatter = plt.scatter(df['learning_rate'], df['initial_t'], 
+                             c=df['average_regret'], cmap='coolwarm_r', 
+                             s=50, alpha=0.7)
+        plt.colorbar(scatter, label='Average Regret (Lower is Better)')
+        plt.xlabel('Learning Rate')
+        plt.ylabel('Initial T')
+        plt.title('Effect of Learning Rate and Initial T on Average Regret')
+        plt.savefig('context_aware_param_effects_regret.png')
+    
+    # Original visualizations - always show these
     plt.figure(figsize=(10, 8))
     scatter = plt.scatter(df['learning_rate'], df['gamma'], 
                          c=df['final_ctr'], cmap='viridis', 
@@ -370,34 +570,108 @@ def analyze_results():
     plt.xlabel('Learning Rate')
     plt.ylabel('Gamma (Exploration)')
     plt.title('Effect of Learning Rate and Gamma on CTR')
-    plt.savefig('param_effects_ctr.png')
-    
-    # Gamma vs power_t colored by time sensitivity
-    plt.figure(figsize=(10, 8))
-    scatter = plt.scatter(df['gamma'], df['power_t'], 
-                         c=df['time_sensitivity'], cmap='plasma', 
-                         s=50, alpha=0.7)
-    plt.colorbar(scatter, label='Time Sensitivity')
-    plt.xlabel('Gamma (Exploration)')
-    plt.ylabel('Power T (Decay Exponent)')
-    plt.title('Effect of Gamma and Power T on Time Sensitivity')
-    plt.savefig('param_effects_time.png')
+    plt.savefig('context_aware_param_effects_ctr.png')
     
     return df
+
+def calculate_context_specific_performance(vw, user_types, times_of_day, actions, num_samples=30):
+    """
+    Evaluate how well the model performs for each specific context (user_type and time_of_day combination)
+    Returns:
+    - Per-context performance metrics
+    - Average regret across contexts
+    - Worst-performing context
+    - Context coverage score (% of contexts with good performance)
+    """
+    # Store results for each context
+    context_performance = {}
+    context_regret = {}
+    
+    for user_type in user_types:
+        for time in times_of_day:
+            context = {'user_type': user_type, 'time_of_day': time}
+            
+            # Find optimal action for this context (lowest expected cost)
+            optimal_action = min(actions, key=lambda a: get_expected_cost(context, a))
+            optimal_reward = -get_expected_cost(context, optimal_action)
+            
+            # Sample model recommendations for this context
+            action_counts = {action: 0 for action in actions}
+            total_reward = 0
+            
+            for _ in range(num_samples):
+                action, _ = get_action(vw, context, actions)
+                action_counts[action] += 1
+                reward = -get_expected_cost(context, action)
+                total_reward += reward
+            
+            # Calculate metrics
+            avg_reward = total_reward / num_samples
+            regret = optimal_reward - avg_reward
+            accuracy = action_counts[optimal_action] / num_samples if optimal_action in action_counts else 0
+            
+            # Store results
+            context_key = f"{user_type}_{time}"
+            context_performance[context_key] = {
+                'optimal_action': optimal_action,
+                'avg_reward': avg_reward,
+                'optimal_reward': optimal_reward,
+                'accuracy': accuracy, 
+                'regret': regret
+            }
+            context_regret[context_key] = regret
+    
+    # Calculate aggregate metrics
+    average_regret = sum(context_regret.values()) / len(context_regret)
+    worst_context_key, worst_regret = max(context_regret.items(), key=lambda x: x[1])
+    # Context coverage: % of contexts with regret better than 1.5x average
+    context_coverage = sum(1 for r in context_regret.values() if r < average_regret * 1.5) / len(context_regret)
+    
+    return {
+        'context_performance': context_performance,
+        'average_regret': average_regret,
+        'worst_context': (worst_context_key, worst_regret),
+        'context_coverage': context_coverage,
+        'max_regret': worst_regret
+    }
+
+def get_expected_cost(context, action):
+    """Calculate expected cost (negative reward) for a given context and action"""
+    user_type = context['user_type']
+    time_of_day = context['time_of_day']
+    base_mu = base_mean_reward[user_type][action]
+    multiplier = user_type_time_multiplier[user_type][time_of_day]
+    mu = base_mu * multiplier
+    return -mu  # Expected cost is negative reward
 
 if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description='Run hyperparameter grid search for contextual bandit')
     parser.add_argument('--analyze', action='store_true', help='Only analyze existing results without running experiments')
+    parser.add_argument('--processes', type=int, default=2, 
+                        help='Number of processes to use for parallel execution (default: 2)')
+    parser.add_argument('--results-file', type=str, default=None,
+                        help='Specify a custom results file to analyze (only used with --analyze)')
     
     args = parser.parse_args()
     
     if args.analyze:
-        print("Analyzing existing results...")
-        analyze_results()
+        if args.results_file:
+            # Use specified results file for analysis
+            original_results_file = RESULTS_FILE
+            RESULTS_FILE = args.results_file
+            print(f"Analyzing specified results file: {RESULTS_FILE}")
+            analyze_results()
+            # Restore original file name
+            RESULTS_FILE = original_results_file
+        else:
+            print(f"Analyzing results from: {RESULTS_FILE}")
+            analyze_results()
     else:
-        print("Starting hyperparameter grid search...")
-        run_grid_search()
+        # Set multiprocessing start method
+        mp.set_start_method('spawn', force=True)
+        print(f"Starting context-aware hyperparameter grid search with {args.processes} processes...")
+        run_grid_search(args.processes)
         print("Analyzing results...")
         analyze_results()
