@@ -15,6 +15,7 @@ from functools import partial
 import csv
 import threading
 import traceback
+import argparse
 
 # Define user types, times of day, and actions (same as original)
 user_types = ["high_roller", "casual_player", "sports_enthusiast", "newbie"]
@@ -61,8 +62,8 @@ user_type_time_multiplier = {
 }
 
 param_grid = {
-    'gamma': [5.0, 15.0, 30.0, 40.0, 50.0],          # Expanded to include higher values up to 50.0
-    'learning_rate': [0.1, 0.5, 1.0, 1.5, 2.0],      # Added higher values up to 2.0
+    'gamma': [30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0],          # Expanded to include higher values up to 50.0
+    'learning_rate': [ 0.5, 1.0, 1.5, 2.0, 3.0, 4.0],      # Added higher values up to 2.0
     'initial_t': [0.5, 1.0, 3.0, 5.0, 8.0],          # Expanded range from 0.5 to 8.0
     'power_t': [0.1, 0.3, 0.5, 0.7, 0.9],            # Expanded to include 0.3 and more values
     'noise_sigma': [0.05]      # More granular search with additional values
@@ -70,9 +71,16 @@ param_grid = {
 
 # Output file
 RESULTS_FILE = 'context_aware_hyperparameter_search_results.csv'
+RESULTS_FILE_PHASE2 = 'context_aware_hyperparameter_search_results_phase2.csv'
 CHECKPOINT_FILE = 'context_aware_hyperparameter_search_checkpoint.json'
-MAX_ITERATIONS = 5000  # Reduced for faster processing with parallelization
+MAX_ITERATIONS = 10000  # Reduced for faster processing with parallelization
 EVAL_INTERVAL = 250  # Increased interval for better performance
+# Number of repetitions for phase 2 statistical validation
+NUM_REPETITIONS = 5  # Number of times to repeat promising experiments
+PHASE2_TOP_PERCENT = 0.15  # Top 15% of parameter combinations to validate
+
+# Add a new constant for the context performance results file
+CONTEXT_PERFORMANCE_FILE = 'context_performance_best_config.csv'
 
 # Core functions from original code
 def get_cost(context, action, noise_sigma=0.1):
@@ -161,11 +169,19 @@ def calculate_time_sensitivity(vw, user_types, times_of_day, actions, num_sample
     # Adjust normalization for the subset of user types
     return time_sensitivity_score / (len(sampled_user_types) * len(list(itertools.combinations(times_of_day, 2))))
 
-def run_experiment(params, seed=None):
-    """Run a single experiment with given hyperparameters with memory optimization"""
+def run_experiment(params, seed=None, run_id=0):
+    """Run a single experiment with given hyperparameters with memory optimization
+    
+    Args:
+        params: Dictionary of hyperparameters
+        seed: Random seed (if None, a unique seed will be generated)
+        run_id: ID to distinguish between multiple runs of the same parameter set (default 0)
+    """
     # Set a unique seed if none provided
     if seed is None:
-        seed = int(time.time() * 1000) % 100000 + os.getpid()
+        # Make seed unique for each run_id
+        base_seed = int(time.time() * 1000) % 100000 + os.getpid()
+        seed = base_seed + run_id * 1000
     
     # Set seeds
     np.random.seed(seed)
@@ -339,8 +355,83 @@ def process_param_combination(param_tuple, param_keys, completed_runs, result_lo
         print(f"Exception: {str(e)}")
         return None
 
-def run_grid_search(num_processes=None):
-    """Run hyperparameter grid search with multiprocessing and memory optimization"""
+def process_param_combination_phase2(param_tuple, param_keys, completed_runs, result_lock):
+    """Process a single parameter combination with multiple runs for phase 2 statistical validation"""
+    try:
+        # Convert tuple to dict of parameters
+        params = {key: param_tuple[i] for i, key in enumerate(param_keys)}
+        
+        # Skip if already done
+        phase2_key = param_tuple + ('phase2',)  # Add marker to distinguish from phase 1
+        if phase2_key in completed_runs:
+            return None
+        
+        # Print status with minimal output to avoid buffer issues
+        print(f"Phase 2: Running multiple repetitions for gamma={params['gamma']}, lr={params['learning_rate']}")
+        
+        # Time the experiment
+        start_time = time.time()
+        
+        # Run multiple experiments with the same parameters
+        result = run_multiple_experiments(params, num_repetitions=NUM_REPETITIONS)
+        
+        # Measure elapsed time
+        elapsed = time.time() - start_time
+        
+        # Extract only the necessary results to save memory
+        row = {
+            'gamma': params['gamma'],
+            'learning_rate': params['learning_rate'],
+            'initial_t': params['initial_t'],
+            'power_t': params['power_t'],
+            'noise_sigma': params['noise_sigma'],
+            'final_ctr_mean': result['final_ctr_mean'],
+            'final_ctr_std': result['final_ctr_std'],
+            'final_ctr_cv': result['final_ctr_cv'],
+            'ab_final_ctr_mean': result['ab_final_ctr_mean'],
+            'ab_final_ctr_std': result['ab_final_ctr_std'],
+            'improvement_over_ab_mean': result['improvement_over_ab_mean'],
+            'improvement_over_ab_std': result['improvement_over_ab_std'],
+            'improvement_over_ab_cv': result['improvement_over_ab_cv'],
+            'time_sensitivity_mean': result['time_sensitivity_mean'],
+            'time_sensitivity_std': result['time_sensitivity_std'],
+            'context_coverage_mean': result['context_coverage_mean'],
+            'context_coverage_std': result['context_coverage_std'],
+            'average_regret_mean': result['average_regret_mean'],
+            'average_regret_std': result['average_regret_std'],
+            'max_regret_mean': result['max_regret_mean'],
+            'max_regret_std': result['max_regret_std'],
+            'num_repetitions': result['num_repetitions'],
+            'timestamp': result['timestamp']
+        }
+        
+        # Write to CSV with lock to prevent race conditions
+        with result_lock:
+            with open(RESULTS_FILE_PHASE2, 'a', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=row.keys())
+                writer.writerow(row)
+        
+        print(f"Phase 2 completed: gamma={params['gamma']}, lr={params['learning_rate']} ({NUM_REPETITIONS} runs) in {elapsed:.2f}s")
+        
+        # Force cleanup
+        del result
+        gc.collect()
+        
+        return row
+    
+    except Exception as e:
+        print(f"Error processing parameters in phase 2: {param_tuple}")
+        print(f"Exception: {str(e)}")
+        traceback.print_exc()
+        return None
+
+def run_grid_search(num_processes=None, run_phase2=True):
+    """Run hyperparameter grid search with multiprocessing and memory optimization
+    
+    Args:
+        num_processes: Number of processes to use in parallel
+        run_phase2: Whether to automatically run phase 2 after phase 1 is completed
+    """
     # Generate all parameter combinations
     param_keys = list(param_grid.keys())
     param_values = list(param_grid.values())
@@ -450,6 +541,10 @@ def run_grid_search(num_processes=None):
             gc.collect()
     
     print("\nGrid search completed!")
+
+    if run_phase2:
+        print("Starting phase 2 grid search...")
+        run_phase2_grid_search(num_processes)
 
 def analyze_results():
     """Analyze results and find best hyperparameter combinations"""
@@ -996,284 +1091,500 @@ def calculate_ab_context_performance(user_types, times_of_day, actions, noise_si
         'ab_max_regret': ab_worst_regret
     }
 
+def run_multiple_experiments(params, num_repetitions=NUM_REPETITIONS):
+    """
+    Run multiple repetitions of an experiment with the same parameters to assess variability
+    
+    Args:
+        params: Dictionary of hyperparameters
+        num_repetitions: Number of times to repeat the experiment
+    
+    Returns:
+        Dictionary with aggregated results including means and standard deviations
+    """
+    # Store results from each run
+    results = []
+    
+    # Run experiments with different seeds
+    for run_id in range(num_repetitions):
+        # Run a single experiment
+        result = run_experiment(params, run_id=run_id)
+        results.append(result)
+        
+        # Force garbage collection between runs
+        gc.collect()
+    
+    # Aggregate metrics across runs
+    aggregated = {
+        # Basic parameters (same for all runs)
+        'gamma': params['gamma'],
+        'learning_rate': params['learning_rate'],
+        'initial_t': params['initial_t'],
+        'power_t': params['power_t'],
+        'noise_sigma': params['noise_sigma'],
+        
+        # List of all individual run results
+        'individual_runs': results,
+        
+        # Calculate means for key metrics
+        'final_ctr_mean': np.mean([r['final_ctr'] for r in results]),
+        'final_ctr_std': np.std([r['final_ctr'] for r in results]),
+        'ab_final_ctr_mean': np.mean([r['ab_final_ctr'] for r in results]),
+        'ab_final_ctr_std': np.std([r['ab_final_ctr'] for r in results]),
+        'improvement_over_ab_mean': np.mean([r['improvement_over_ab'] for r in results]),
+        'improvement_over_ab_std': np.std([r['improvement_over_ab'] for r in results]),
+        'time_sensitivity_mean': np.mean([r['time_sensitivity'] for r in results]),
+        'time_sensitivity_std': np.std([r['time_sensitivity'] for r in results]),
+        'context_coverage_mean': np.mean([r['context_coverage'] for r in results]),
+        'context_coverage_std': np.std([r['context_coverage'] for r in results]),
+        'average_regret_mean': np.mean([r['average_regret'] for r in results]),
+        'average_regret_std': np.std([r['average_regret'] for r in results]),
+        'max_regret_mean': np.mean([r['max_regret'] for r in results]),
+        'max_regret_std': np.std([r['max_regret'] for r in results]),
+        
+        # Keep the details from the first run for simplicity
+        'context_performance_details': results[0]['context_performance_details'],
+        'ab_context_performance': results[0]['ab_context_performance'],
+        
+        # Number of repetitions
+        'num_repetitions': num_repetitions,
+        
+        # Coefficient of variation (CV) for key metrics to measure stability
+        # CV = std / mean (lower is more stable)
+        'final_ctr_cv': np.std([r['final_ctr'] for r in results]) / 
+                         max(abs(np.mean([r['final_ctr'] for r in results])), 1e-10),
+        'improvement_over_ab_cv': np.std([r['improvement_over_ab'] for r in results]) / 
+                                  max(abs(np.mean([r['improvement_over_ab'] for r in results])), 1e-10),
+        
+        # Timestamp
+        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    
+    return aggregated
+
+def get_completed_phase2_runs():
+    """Get a set of parameter combinations that have already been run in phase 2"""
+    if not os.path.exists(RESULTS_FILE_PHASE2):
+        return set()
+    
+    try:
+        df = pd.read_csv(RESULTS_FILE_PHASE2)
+        # Convert parameters to tuple for hashable comparison
+        completed = set()
+        for _, row in df.iterrows():
+            param_tuple = (row['gamma'], row['learning_rate'], row['initial_t'], 
+                          row['power_t'], row['noise_sigma'], 'phase2')  # Add phase2 marker
+            completed.add(param_tuple)
+        return completed
+    except:
+        return set()
+
+def run_phase2_grid_search(num_processes=None):
+    """Run phase 2 of the grid search with multiple repetitions for top parameter combinations"""
+    # First, check if phase 1 has been completed
+    if not os.path.exists(RESULTS_FILE):
+        print("Error: Phase 1 results file not found. Please run phase 1 first.")
+        return
+    
+    try:
+        # Load phase 1 results
+        df = pd.read_csv(RESULTS_FILE)
+        
+        # Check if we have enough data
+        if len(df) == 0:
+            print("Error: Phase 1 results file is empty. Please run phase 1 first.")
+            return
+        
+        print(f"Loaded {len(df)} parameter combinations from phase 1")
+        
+        # Determine which metric to use for selecting top combinations
+        if 'context_aware_score' in df.columns:
+            sort_metric = 'context_aware_score'
+            ascending = False  # Higher is better
+        else:
+            # Fall back to CTR if context_aware_score is not available
+            sort_metric = 'final_ctr'
+            ascending = False  # Higher is better
+        
+        print(f"Selecting top {PHASE2_TOP_PERCENT*100:.0f}% of parameter combinations based on {sort_metric}")
+        
+        # Sort and select top combinations
+        df_sorted = df.sort_values(sort_metric, ascending=ascending)
+        num_to_select = max(1, int(len(df) * PHASE2_TOP_PERCENT))
+        top_combinations = df_sorted.head(num_to_select)
+        
+        print(f"Selected {len(top_combinations)} top parameter combinations for phase 2")
+        
+        # Convert top combinations to parameter tuples
+        param_keys = ['gamma', 'learning_rate', 'initial_t', 'power_t', 'noise_sigma']
+        param_combinations = []
+        
+        for _, row in top_combinations.iterrows():
+            param_tuple = tuple(row[key] for key in param_keys)
+            param_combinations.append(param_tuple)
+        
+        # Get already completed phase 2 runs
+        completed_phase2_runs = get_completed_phase2_runs()
+        print(f"Found {len(completed_phase2_runs)} already completed phase 2 runs")
+        
+        # Filter out already completed phase 2 runs 
+        param_combinations_to_run = []
+        for pc in param_combinations:
+            phase2_key = pc + ('phase2',)
+            if phase2_key not in completed_phase2_runs:
+                param_combinations_to_run.append(pc)
+        
+        print(f"Phase 2 combinations remaining to run: {len(param_combinations_to_run)}")
+        
+        # Define phase 2 result columns
+        phase2_columns = [
+            'gamma', 'learning_rate', 'initial_t', 'power_t', 'noise_sigma',
+            'final_ctr_mean', 'final_ctr_std', 'final_ctr_cv',
+            'ab_final_ctr_mean', 'ab_final_ctr_std',
+            'improvement_over_ab_mean', 'improvement_over_ab_std', 'improvement_over_ab_cv',
+            'time_sensitivity_mean', 'time_sensitivity_std',
+            'context_coverage_mean', 'context_coverage_std',
+            'average_regret_mean', 'average_regret_std',
+            'max_regret_mean', 'max_regret_std',
+            'num_repetitions', 'timestamp'
+        ]
+        
+        # Create phase 2 results file if it doesn't exist
+        if not os.path.exists(RESULTS_FILE_PHASE2):
+            # Create empty dataframe with columns
+            df_phase2 = pd.DataFrame(columns=phase2_columns)
+            df_phase2.to_csv(RESULTS_FILE_PHASE2, index=False)
+        
+        # If no combinations to run, we're done
+        if not param_combinations_to_run:
+            print("All phase 2 parameter combinations already completed.")
+            return
+        
+        # Determine the number of processes to use (default to 3)
+        if num_processes is None:
+            num_processes = min(3, len(param_combinations_to_run))
+        print(f"Running phase 2 with {num_processes} parallel processes")
+        
+        # Create a progress tracking mechanism
+        progress_lock = threading.Lock()
+        progress_count = mp.Value('i', 0)
+        
+        def track_progress(result):
+            if result is not None:  # Skip None results (already completed runs)
+                with progress_lock:
+                    progress_count.value += 1
+                    percent = progress_count.value / len(param_combinations_to_run) * 100
+                    print(f"\rPhase 2 Progress: {progress_count.value}/{len(param_combinations_to_run)} ({percent:.1f}%)", 
+                          end="", flush=True)
+        
+        # Process in smaller batches to manage memory better
+        BATCH_SIZE = num_processes * 2  # Process 2 batches per process at a time
+        
+        # Use a Manager object to create a shareable lock
+        with mp.Manager() as manager:
+            result_lock = manager.Lock()
+            
+            # Process combinations in batches to control memory usage
+            for batch_start in range(0, len(param_combinations_to_run), BATCH_SIZE):
+                batch_end = min(batch_start + BATCH_SIZE, len(param_combinations_to_run))
+                batch = param_combinations_to_run[batch_start:batch_end]
+                
+                print(f"\nProcessing phase 2 batch {batch_start//BATCH_SIZE + 1}/{(len(param_combinations_to_run)+BATCH_SIZE-1)//BATCH_SIZE}")
+                
+                # Create a partial function with fixed parameters
+                process_func = partial(process_param_combination_phase2, 
+                                    param_keys=param_keys, 
+                                    completed_runs=completed_phase2_runs,
+                                    result_lock=result_lock)
+                
+                # Run batch in parallel
+                with mp.Pool(processes=num_processes) as pool:
+                    async_results = []
+                    for param_combination in batch:
+                        async_result = pool.apply_async(process_func, (param_combination,), callback=track_progress)
+                        async_results.append(async_result)
+                    
+                    # Wait for all processes in this batch to complete
+                    for async_result in async_results:
+                        async_result.wait()
+                
+                # Force garbage collection between batches
+                gc.collect()
+        
+        print("\nPhase 2 grid search completed!")
+        
+    except Exception as e:
+        print(f"Error in phase 2 grid search: {str(e)}")
+        traceback.print_exc()
+
+def analyze_phase2_results():
+    """Analyze statistical results from phase 2 (multiple runs for top parameter combinations)"""
+    if not os.path.exists(RESULTS_FILE_PHASE2):
+        print("No phase 2 results file found.")
+        return
+    
+    try:
+        df = pd.read_csv(RESULTS_FILE_PHASE2)
+        
+        if len(df) == 0:
+            print("Phase 2 results file is empty.")
+            return
+            
+        print(f"Analyzed {len(df)} parameter combinations with multiple runs")
+        print(f"Each combination was run {df['num_repetitions'].iloc[0]} times")
+        
+        # Display key statistics for all parameter combinations
+        print("\nPhase 2 Parameter Combinations (ordered by mean CTR):")
+        print("="*100)
+        print(f"{'Gamma':<8} {'LR':<8} {'Init T':<8} {'Power T':<8} {'CTR Mean':<10} {'CTR Std':<10} {'CTR CV %':<10} {'Improv %':<10} {'Improv Std':<10}")
+        print("-"*100)
+        
+        # Sort by mean CTR descending
+        sorted_df = df.sort_values('final_ctr_mean', ascending=False)
+        
+        for _, row in sorted_df.iterrows():
+            gamma = row['gamma']
+            lr = row['learning_rate']
+            init_t = row['initial_t']
+            power_t = row['power_t']
+            ctr_mean = row['final_ctr_mean']
+            ctr_std = row['final_ctr_std']
+            ctr_cv = row['final_ctr_cv'] * 100  # Convert to percentage
+            
+            # Handle case where improvement columns might be missing
+            if 'improvement_over_ab_mean' in row:
+                improv_mean = row['improvement_over_ab_mean']
+                improv_std = row['improvement_over_ab_std']
+            else:
+                improv_mean = np.nan
+                improv_std = np.nan
+                
+            print(f"{gamma:<8.2f} {lr:<8.2f} {init_t:<8.2f} {power_t:<8.2f} {ctr_mean:<10.4f} {ctr_std:<10.4f} {ctr_cv:<10.2f} {improv_mean:<10.2f} {improv_std:<10.4f}")
+        
+        print("\n")
+        
+        # Check if we have context-specific metrics
+        context_cols = ['context_coverage_mean', 'average_regret_mean']
+        has_context = all(col in df.columns for col in context_cols)
+        
+        if has_context:
+            # Print results for context metrics
+            print("\nPhase 2 Parameter Combinations (ordered by context coverage):")
+            print("="*100)
+            print(f"{'Gamma':<8} {'LR':<8} {'Init T':<8} {'Power T':<8} {'Ctx Cov %':<10} {'Ctx Cov Std':<12} {'Avg Regret':<10} {'Regret Std':<10}")
+            print("-"*100)
+            
+            # Sort by context coverage descending
+            sorted_df = df.sort_values('context_coverage_mean', ascending=False)
+            
+            for _, row in sorted_df.iterrows():
+                gamma = row['gamma']
+                lr = row['learning_rate']
+                init_t = row['initial_t']
+                power_t = row['power_t']
+                ctx_cov = row['context_coverage_mean'] * 100  # Convert to percentage
+                ctx_cov_std = row['context_coverage_std'] * 100  # Convert to percentage
+                avg_regret = row['average_regret_mean']
+                avg_regret_std = row['average_regret_std']
+                
+                print(f"{gamma:<8.2f} {lr:<8.2f} {init_t:<8.2f} {power_t:<8.2f} {ctx_cov:<10.2f} {ctx_cov_std:<12.2f} {avg_regret:<10.4f} {avg_regret_std:<10.4f}")
+        
+        # Create some visualizations for the variability
+        plt.figure(figsize=(10, 6))
+        
+        # Sort by mean CTR for the chart
+        chart_df = df.sort_values('final_ctr_mean', ascending=False).head(10)
+        
+        # Create parameter labels for x-axis
+        param_labels = [f"γ={row['gamma']:.1f},η={row['learning_rate']:.1f}" for _, row in chart_df.iterrows()]
+        
+        # Plot mean CTR with error bars
+        plt.errorbar(range(len(chart_df)), chart_df['final_ctr_mean'], 
+                    yerr=chart_df['final_ctr_std'], fmt='o', capsize=5,
+                    color='blue', label='CTR with Std Dev')
+        
+        # Add stability score (lower CV is better)
+        stability_scores = 1 - chart_df['final_ctr_cv']  # Invert CV so higher is better
+        stability_normalized = (stability_scores - min(stability_scores)) / (max(stability_scores) - min(stability_scores) + 1e-10)
+        
+        # Add second axis for stability score
+        ax2 = plt.gca().twinx()
+        ax2.plot(range(len(chart_df)), stability_normalized, 'r-', label='Stability Score')
+        ax2.set_ylabel('Stability Score (higher is better)', color='red')
+        
+        # Set x-ticks
+        plt.xticks(range(len(chart_df)), param_labels, rotation=45, ha='right')
+        
+        plt.title('Top 10 Parameter Combinations - Mean CTR with Std Dev')
+        plt.xlabel('Parameter Combination')
+        plt.ylabel('CTR')
+        plt.tight_layout()
+        plt.grid(True, alpha=0.3)
+        
+        # Add legend for both axes
+        lines1, labels1 = plt.gca().get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        plt.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
+        
+        plt.savefig('phase2_ctr_variability.png')
+        plt.close()
+        
+        print("\nSaved variability analysis chart to 'phase2_ctr_variability.png'")
+        
+        # Find most stable configurations (lowest CV)
+        print("\nMost Stable Parameter Combinations (lowest coefficient of variation):")
+        stable_df = df.sort_values('final_ctr_cv', ascending=True).head(5)
+        print(stable_df[['gamma', 'learning_rate', 'initial_t', 'power_t',
+                         'final_ctr_mean', 'final_ctr_std', 'final_ctr_cv']])
+        
+        # Create a composite score considering both performance and stability
+        df['stability_score'] = 1 - df['final_ctr_cv']  # Invert CV so higher is better
+        
+        # Normalize metrics for fair comparison
+        df['norm_ctr'] = (df['final_ctr_mean'] - df['final_ctr_mean'].min()) / (df['final_ctr_mean'].max() - df['final_ctr_mean'].min())
+        df['norm_stability'] = (df['stability_score'] - df['stability_score'].min()) / (df['stability_score'].max() - df['stability_score'].min())
+        
+        # Create a composite score (70% performance, 30% stability)
+        df['robust_score'] = 0.7 * df['norm_ctr'] + 0.3 * df['norm_stability']
+        
+        print("\nBest Parameter Combinations (considering both performance and stability):")
+        robust_df = df.sort_values('robust_score', ascending=False).head(5)
+        print(robust_df[['gamma', 'learning_rate', 'initial_t', 'power_t',
+                         'final_ctr_mean', 'final_ctr_std', 'final_ctr_cv', 'robust_score']])
+        
+        # Identify the overall best configuration
+        best_config = df.loc[df['robust_score'].idxmax()]
+        
+        print("\n" + "="*80)
+        print("BEST ROBUST CONFIGURATION FROM PHASE 2")
+        print("="*80)
+        print(f"Gamma: {best_config['gamma']:.2f}")
+        print(f"Learning Rate: {best_config['learning_rate']:.2f}")
+        print(f"Initial T: {best_config['initial_t']:.2f}")
+        print(f"Power T: {best_config['power_t']:.2f}")
+        print(f"Mean CTR: {best_config['final_ctr_mean']:.4f} ± {best_config['final_ctr_std']:.4f}")
+        print(f"Coefficient of Variation: {best_config['final_ctr_cv']*100:.2f}%")
+        
+        if 'improvement_over_ab_mean' in best_config:
+            print(f"Mean Improvement over A/B: {best_config['improvement_over_ab_mean']:.2f}% ± {best_config['improvement_over_ab_std']:.2f}%")
+        
+        if has_context:
+            print(f"Mean Context Coverage: {best_config['context_coverage_mean']*100:.2f}% ± {best_config['context_coverage_std']*100:.2f}%")
+            print(f"Mean Average Regret: {best_config['average_regret_mean']:.4f} ± {best_config['average_regret_std']:.4f}")
+        
+        return df
+    
+    except Exception as e:
+        print(f"Error analyzing phase 2 results: {str(e)}")
+        traceback.print_exc()
+        return None
+
+def run_best_config_with_context_details(num_repetitions=10):
+    """
+    Run experiments with the best hyperparameter configuration and save detailed
+    context-specific performance data with A/B testing comparison.
+    
+    Args:
+        num_repetitions: Number of repetitions to run for statistical significance
+    """
+    print(f"Running {num_repetitions} repetitions with best hyperparameter configuration...")
+    
+    # Best configuration from phase 2 results
+    best_params = {
+        'gamma': 50.0,
+        'learning_rate': 2.0,
+        'initial_t': 5.0,
+        'power_t': 0.1,
+        'noise_sigma': 0.05
+    }
+    
+    # Run multiple experiments with this configuration
+    results = run_multiple_experiments(best_params, num_repetitions)
+    
+    # Extract context performance details
+    context_perf = results['context_performance_details']
+    ab_perf_data = results['ab_context_performance']
+    ab_perf = ab_perf_data['ab_context_performance']
+    
+    # Prepare CSV data for context-specific performance
+    context_data = []
+    contexts = sorted(context_perf.keys())
+    
+    for context in contexts:
+        if context in ab_perf:
+            # Extract metrics
+            cb_metrics = context_perf[context]
+            ab_metrics = ab_perf[context]
+            
+            # Get key metrics
+            cb_reward = cb_metrics.get('avg_reward', 0.0)
+            optimal_action = cb_metrics.get('optimal_action', 'unknown')
+            optimal_reward = cb_metrics.get('optimal_reward', 0.0)
+            accuracy = cb_metrics.get('accuracy', 0.0) * 100  # Convert to percentage
+            regret = cb_metrics.get('regret', 0.0)
+            
+            # A/B testing metrics
+            ab_reward = -ab_metrics.get('ab_cost', 0.0)  # Reward is negative cost
+            ab_accuracy = ab_metrics.get('ab_accuracy', 0.0) * 100  # Convert to percentage
+            ab_regret = ab_metrics.get('ab_regret', 0.0)
+            
+            # Calculate improvement over A/B testing
+            reward_improvement = ((cb_reward - ab_reward) / abs(ab_reward)) * 100 if ab_reward != 0 else 0
+            accuracy_improvement = accuracy - ab_accuracy
+            regret_improvement = ((ab_regret - regret) / abs(ab_regret)) * 100 if ab_regret != 0 else 0
+            
+            # Split context into user_type and time_of_day
+            parts = context.split('_')
+            user_type = parts[0]
+            time_of_day = '_'.join(parts[1:]) if len(parts) > 1 else "unknown"
+            
+            # Build row
+            row = {
+                'context': context,
+                'user_type': user_type,
+                'time_of_day': time_of_day,
+                'optimal_action': optimal_action,
+                'cb_reward': cb_reward,
+                'ab_reward': ab_reward,
+                'reward_improvement_pct': reward_improvement,
+                'cb_accuracy': accuracy,
+                'ab_accuracy': ab_accuracy,
+                'accuracy_improvement': accuracy_improvement,
+                'cb_regret': regret,
+                'ab_regret': ab_regret,
+                'regret_improvement_pct': regret_improvement,
+                'optimal_reward': optimal_reward
+            }
+            context_data.append(row)
+    
+    # Save to CSV
+    with open(CONTEXT_PERFORMANCE_FILE, 'w', newline='') as f:
+        if context_data:
+            writer = csv.DictWriter(f, fieldnames=context_data[0].keys())
+            writer.writeheader()
+            writer.writerows(context_data)
+            print(f"Saved context performance data to {CONTEXT_PERFORMANCE_FILE}")
+        else:
+            print("No context performance data available to save")
+    
+    return results
+
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description='Run hyperparameter grid search for contextual bandit')
-    parser.add_argument('--analyze', action='store_true', 
-                        help='Only analyze existing results without running experiments')
-    parser.add_argument('--report', action='store_true',
-                        help='Generate a detailed performance report for the best configuration')
-    parser.add_argument('--baseline', action='store_true',
-                        help='Include A/B testing baseline comparison in the report')
-    parser.add_argument('--processes', type=int, default=2, 
-                        help='Number of processes to use for parallel execution (default: 2)')
-    parser.add_argument('--results-file', type=str, default=None,
-                        help='Specify a custom results file to analyze (only used with --analyze or --report)')
-    
+    parser = argparse.ArgumentParser(description='Run hyperparameter search for contextual bandits')
+    parser.add_argument('--analyze', action='store_true', help='Analyze existing results')
+    parser.add_argument('--processes', type=int, default=None, help='Number of processes to use')
+    parser.add_argument('--best-config', action='store_true', help='Run best configuration with detailed context analysis')
+    parser.add_argument('--phase2', action='store_true', help='Run phase 2 grid search')
     args = parser.parse_args()
     
-    if args.analyze or args.report:
-        if args.results_file:
-            # Use specified results file for analysis
-            original_results_file = RESULTS_FILE
-            RESULTS_FILE = args.results_file
-            print(f"Using specified results file: {RESULTS_FILE}")
-            
-            if args.report:
-                print("Generating detailed performance report...")
-                # Load and analyze the data, but customize the report function for detailed output
-                df = pd.read_csv(RESULTS_FILE)
-                
-                # Extract the best configuration
-                if 'context_aware_score' in df.columns:
-                    best_config = df.loc[df['context_aware_score'].idxmax()]
-                    metric_name = 'context-aware score'
-                else:
-                    best_config = df.loc[df['final_ctr'].idxmax()]
-                    metric_name = 'CTR'
-                
-                # Print detailed report header
-                print("\n" + "="*80)
-                print("DETAILED PERFORMANCE REPORT FOR OPTIMAL SOLUTION")
-                print("="*80)
-                
-                # Print configuration details
-                print(f"\nBest configuration (by {metric_name}):")
-                print(f"  Gamma: {best_config['gamma']:.2f}")
-                print(f"  Learning Rate: {best_config['learning_rate']:.2f}")
-                print(f"  Initial T: {best_config['initial_t']:.2f}")
-                print(f"  Power T: {best_config['power_t']:.2f}")
-                print(f"  Noise Sigma: {best_config['noise_sigma']:.2f}")
-                
-                # Print overall performance metrics
-                print("\nOverall Performance Metrics:")
-                print(f"  Contextual Bandit Final CTR: {best_config['final_ctr']:.4f}")
-                
-                # Check for A/B comparison columns
-                has_ab_comparison = 'ab_final_ctr' in df.columns and 'improvement_over_ab' in df.columns
-                
-                if has_ab_comparison:
-                    print(f"  A/B Testing Final CTR: {best_config['ab_final_ctr']:.4f}")
-                    improvement = best_config['improvement_over_ab']
-                    print(f"  Improvement over A/B: {improvement:.2f}%")
-                
-                # Check for context metrics
-                has_context_metrics = all(col in df.columns for col in ['context_coverage', 'average_regret', 'max_regret', 'worst_context'])
-                
-                if has_context_metrics:
-                    print(f"  Time Sensitivity: {best_config['time_sensitivity']:.4f}")
-                    print(f"  Context Coverage: {best_config['context_coverage']:.4f} ({best_config['context_coverage']*100:.1f}%)")
-                    print(f"  Average Regret: {best_config['average_regret']:.4f}")
-                    print(f"  Max Regret: {best_config['max_regret']:.4f}")
-                    print(f"  Worst Context: {best_config['worst_context']}")
-                
-                # Generate A/B comparison chart
-                if has_ab_comparison:
-                    plt.figure(figsize=(10, 6))
-                    labels = ['Contextual Bandit', 'A/B Testing']
-                    values = [best_config['final_ctr'], best_config['ab_final_ctr']]
-                    colors = ['blue', 'gray']
-                    
-                    plt.bar(labels, values, color=colors)
-                    plt.title('CTR Comparison: Contextual Bandit vs A/B Testing')
-                    plt.ylabel('Cumulative Reward (CTR)')
-                    plt.grid(axis='y', linestyle='--', alpha=0.7)
-                    
-                    # Add text labels
-                    for i, v in enumerate(values):
-                        plt.text(i, v + 0.01, f"{v:.4f}", ha='center')
-                    
-                    # Add improvement annotation
-                    plt.annotate(f"{improvement:.2f}% improvement", 
-                              xy=(0, values[0]), 
-                              xytext=(0.5, max(values) * 1.1),
-                              arrowprops=dict(arrowstyle="->", connectionstyle="arc3,rad=.2"))
-                    
-                    plt.savefig('cb_vs_ab_comparison.png')
-                    print("\nSaved CTR comparison chart to 'cb_vs_ab_comparison.png'")
-                
-                # Generate context-specific performance report
-                if 'context_performance_details' in df.columns and has_context_metrics:
-                    try:
-                        # Parse the context performance details from the selected row
-                        # Use json.loads instead of eval for safer parsing
-                        # Also handle the case where the data might be already a dictionary
-                        if isinstance(best_config['context_performance_details'], dict):
-                            context_perf = best_config['context_performance_details']
-                        else:
-                            try:
-                                import json
-                                context_perf = json.loads(best_config['context_performance_details'].replace("'", '"'))
-                            except json.JSONDecodeError as json_err:
-                                # Fall back to eval with proper error handling
-                                try:
-                                    context_perf = eval(best_config['context_performance_details'])
-                                except Exception as e:
-                                    print(f"Could not parse context performance data using eval: {e}")
-                                    context_perf = {}
-                        
-                        if context_perf:
-                            print("\nContext-Specific Performance:")
-                            print("-" * 80)
-                            print(f"{'Context':<20} {'Optimal Action':<15} {'Avg Reward':<12} {'Optimal Reward':<15} {'Accuracy %':<12} {'Regret':<10}")
-                            print("-" * 80)
-                            
-                            total_accuracy = 0
-                            num_contexts = len(context_perf)
-                            
-                            for context, metrics in sorted(context_perf.items()):
-                                # Safely split context using underscore delimiter
-                                parts = context.split('_')
-                                user_type = parts[0]
-                                time = '_'.join(parts[1:]) if len(parts) > 1 else "unknown"
-                                
-                                # Safely extract metrics values
-                                try:
-                                    optimal_action = metrics.get('optimal_action', 'unknown')
-                                    avg_reward = metrics.get('avg_reward', 0.0)
-                                    optimal_reward = metrics.get('optimal_reward', 0.0)
-                                    accuracy = metrics.get('accuracy', 0.0)
-                                    regret = metrics.get('regret', 0.0)
-                                    
-                                    accuracy_pct = accuracy * 100
-                                    total_accuracy += accuracy
-                                    
-                                    print(f"{context:<20} {optimal_action:<15} {avg_reward:.2f}{'':<8} {optimal_reward:.2f}{'':<10} {accuracy_pct:.1f}%{'':<6} {regret:.2f}")
-                                except Exception as e:
-                                    print(f"Error processing metrics for {context}: {e}")
-                            
-                            print("-" * 80)
-                            print(f"Average Accuracy: {(total_accuracy/num_contexts)*100:.2f}%" if num_contexts else "Average Accuracy: 0.0%")
-                        else:
-                            print("\nNo context-specific performance data available.")
-                        
-                        # If we have A/B comparison, add that to the context report
-                        if 'ab_context_performance' in df.columns and has_ab_comparison:
-                            try:
-                                # Parse the A/B performance details using the same safe approach
-                                if isinstance(best_config['ab_context_performance'], dict):
-                                    ab_perf = best_config['ab_context_performance']
-                                else:
-                                    try:
-                                        import json
-                                        ab_perf = json.loads(best_config['ab_context_performance'].replace("'", '"'))
-                                    except json.JSONDecodeError:
-                                        # Fall back to eval with proper error handling
-                                        try:
-                                            ab_perf = eval(best_config['ab_context_performance'])
-                                        except Exception as e:
-                                            print(f"Could not parse A/B context performance data using eval: {e}")
-                                            ab_perf = {'ab_context_performance': {}}
-                                
-                                # Make sure ab_context_performance exists in the dict
-                                if ab_perf and 'ab_context_performance' in ab_perf:
-                                    print("\nA/B Testing vs SquareCB Performance by Context:")
-                                    print("-" * 80)
-                                    print(f"{'Context':<20} {'CB Reward':<12} {'A/B Reward':<12} {'Improvement %':<15}")
-                                    print("-" * 80)
-                                    
-                                    cb_rewards = []
-                                    ab_rewards = []
-                                    
-                                    for context in sorted(context_perf.keys()):
-                                        if context in ab_perf['ab_context_performance']:
-                                            try:
-                                                # Safely access values
-                                                cb_reward = context_perf[context].get('avg_reward', 0.0)
-                                                # Get A/B cost (might be stored differently)
-                                                ab_metrics = ab_perf['ab_context_performance'][context]
-                                                if isinstance(ab_metrics, dict):
-                                                    ab_cost = ab_metrics.get('ab_cost', 0.0)
-                                                else:
-                                                    ab_cost = 0.0
-                                                
-                                                ab_reward = -ab_cost  # Reward is negative cost
-                                                improvement = ((cb_reward - ab_reward) / abs(ab_reward)) * 100 if ab_reward != 0 else 0
-                                                
-                                                cb_rewards.append(cb_reward)
-                                                ab_rewards.append(ab_reward)
-                                                
-                                                print(f"{context:<20} {cb_reward:.2f}{'':<8} {ab_reward:.2f}{'':<8} {improvement:.2f}%")
-                                            except Exception as e:
-                                                print(f"Error processing A/B comparison for {context}: {e}")
-                                    
-                                    if cb_rewards and ab_rewards:
-                                        print("-" * 80)
-                                        avg_cb = sum(cb_rewards) / len(cb_rewards) 
-                                        avg_ab = sum(ab_rewards) / len(ab_rewards)
-                                        avg_imp = ((avg_cb - avg_ab) / abs(avg_ab)) * 100 if avg_ab != 0 else 0
-                                        print(f"Average:           {avg_cb:.2f}{'':<8} {avg_ab:.2f}{'':<8} {avg_imp:.2f}%")
-                                        
-                                        # Create contextual performance visualization
-                                        try:
-                                            plt.figure(figsize=(12, 8))
-                                            contexts = sorted(context_perf.keys())
-                                            contexts_for_chart = [ctx for ctx in contexts if ctx in ab_perf['ab_context_performance']]
-                                            
-                                            if contexts_for_chart:
-                                                x = np.arange(len(contexts_for_chart))
-                                                width = 0.35
-                                                
-                                                cb_vals = [context_perf[ctx].get('avg_reward', 0.0) for ctx in contexts_for_chart]
-                                                ab_vals = [-ab_perf['ab_context_performance'][ctx].get('ab_cost', 0.0) for ctx in contexts_for_chart]
-                                                
-                                                fig, ax = plt.subplots(figsize=(14, 8))
-                                                rects1 = ax.bar(x - width/2, cb_vals, width, label='SquareCB')
-                                                rects2 = ax.bar(x + width/2, ab_vals, width, label='A/B Testing')
-                                                
-                                                ax.set_ylabel('Average Reward')
-                                                ax.set_title('SquareCB vs A/B Testing Performance by Context')
-                                                ax.set_xticks(x)
-                                                ax.set_xticklabels(contexts_for_chart, rotation=45, ha='right')
-                                                ax.legend()
-                                                
-                                                # Add improvement labels
-                                                for i, (cb, ab) in enumerate(zip(cb_vals, ab_vals)):
-                                                    imp = ((cb - ab) / abs(ab)) * 100 if ab != 0 else 0
-                                                    ax.annotate(f"{imp:.1f}%", 
-                                                              xy=(i, max(cb, ab) + 1),
-                                                              ha='center', va='bottom',
-                                                              color='green' if imp > 0 else 'red',
-                                                              weight='bold')
-                                                
-                                                fig.tight_layout()
-                                                plt.savefig('context_performance_comparison.png')
-                                                print("\nSaved context performance comparison chart to 'context_performance_comparison.png'")
-                                                plt.close()
-                                        except Exception as e:
-                                            print(f"\nCould not create performance comparison visualization: {str(e)}")
-                            except Exception as e:
-                                print(f"Could not process A/B context performance data: {e}")
-                                traceback.print_exc()
-                    except (ValueError, SyntaxError) as e:
-                        print(f"Could not parse context performance data: {e}")
-                
-            else:
-                # Regular analysis
-                analyze_results()
-                
-            # Restore original file name
-            RESULTS_FILE = original_results_file
-        else:
-            print(f"Using default results file: {RESULTS_FILE}")
-            if args.report:
-                print("Generating detailed performance report...")
-                # Call the analyze function with the report flag
-                df = pd.read_csv(RESULTS_FILE)
-                
-                # Use the best config extraction logic as above
-                # This is a duplicate of the above code for the case without a custom results file
-                
-                # For simplicity, just call analyze_results() here
-                analyze_results()
-            else:
-                analyze_results()
+    if args.analyze:
+        analyze_phase2_results()
+    elif args.best_config:
+        run_best_config_with_context_details()
+    elif args.phase2:
+        run_phase2_grid_search(args.processes)
     else:
-        # Run the full grid search and analysis
-        # Set multiprocessing start method
-        mp.set_start_method('spawn', force=True)
-        print(f"Starting context-aware hyperparameter grid search with {args.processes} processes...")
-        run_grid_search(args.processes)
-        print("Analyzing results...")
-        analyze_results()
+        # Run phase 1 by default
+        run_grid_search(args.processes, run_phase2=False)  # Don't automatically run phase 2
